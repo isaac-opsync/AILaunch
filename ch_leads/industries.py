@@ -28,7 +28,12 @@ INDUSTRIES = {
         "angle": "Pays timber, aggregate and building-products suppliers by bank transfer on large trade invoices",
     },
     "IT Hardware": {
-        "sic": {"26110", "26120", "26200", "46510", "46520", "47410", "95110"},
+        "sic": {"26110", "26120", "26200", "46510", "46520", "47410"},
+        # Hardware resellers/distributors only: not repair shops or IT-support firms.
+        "primary_sic_only": True,
+        "exclude_sic": {"95110", "95120"},
+        "exclude_name": r"\b(REPAIRS?|FIX|SUPPORT|HELPDESK|IT SERVICES|TECH SERVICES)\b",
+        "require_website": True,
         "angle": "Pays distributors (e.g. Ingram, TD Synnex, Westcoast) and OEMs by bank transfer for hardware stock",
     },
     "Workwear & Textiles": {
@@ -70,11 +75,29 @@ for _name, _v in INDUSTRIES.items():
 
 # Only companies incorporated in or after this year (older ones skew old-school).
 MIN_INCORPORATION_YEAR = 1990
+# Only companies whose filed or estimated turnover is at least this.
+MIN_TURNOVER = 500_000
 
 BILL_PAY_LINE = (
     "Bill Pay lets them pay these non-card suppliers from Capital on Tap: the 1.5% fee is a "
     "deductible business cost while they earn 1% (credit) / 1.25% (preload) cashback."
 )
+
+
+def icp_reject(industry, name, sics, has_website):
+    """Reason this company isn't ICP for the industry tab, or None."""
+    import re
+    rule = INDUSTRIES[industry]
+    codes = [x[:5] for x in sics]
+    if rule.get("primary_sic_only") and (not codes or codes[0] not in rule["sic"]):
+        return "industry is not their primary activity"
+    if set(codes) & rule.get("exclude_sic", set()):
+        return "repair/support business"
+    if rule.get("exclude_name") and re.search(rule["exclude_name"], name.upper()):
+        return "repair/support business"
+    if rule.get("require_website") and not has_website:
+        return "no website"
+    return None
 
 
 def director_line(n):

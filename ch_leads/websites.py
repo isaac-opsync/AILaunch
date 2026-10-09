@@ -1,5 +1,6 @@
 """Find and verify company websites by guessing domains from the company name."""
 import html as htmlmod
+import os
 import re
 from urllib.parse import unquote, urljoin
 
@@ -84,14 +85,60 @@ def _contacts(html, text):
     return (phones[0].strip() if phones else ""), email
 
 
-def find_website(number, name, postcode):
-    """Returns dict(url, match, title, description, phone, email) or None."""
+DIRECTORY_HOSTS = (
+    "companieshouse", "company-information.service.gov.uk", "endole", "opencorporates", "linkedin.",
+    "facebook.", "instagram.", "twitter.", "x.com", "yell.com", "companycheck", "bizdb", "dnb.com",
+    "zoominfo", "checkcompany", "companiesintheuk", "find-and-update", "thegazette", "yelp.",
+    "trustpilot", "glassdoor", "indeed.", "cylex", "192.com", "scoot.co.uk", "thomsonlocal",
+    "freeindex", "companydatashop", "suite.endole", "bloomberg", "crunchbase", "wikipedia",
+    "youtube", "tiktok", "pinterest", "amazon.", "ebay.", "google.", "bing.", "apple.com",
+)
+
+
+def search_urls(name, town):
+    """Top organic Google results via Serper.dev (needs SERPER_API_KEY)."""
+    key = os.environ.get("SERPER_API_KEY")
+    if not key:
+        return []
+    q = re.sub(r"\b(LIMITED|LTD|PLC)\b\.?", "", name, flags=re.I).strip()
+    try:
+        r = requests.post("https://google.serper.dev/search", timeout=15,
+                          headers={"X-API-KEY": key, "Content-Type": "application/json"},
+                          json={"q": f"{q} {town or ''}".strip(), "gl": "uk", "num": 10})
+        items = r.json().get("organic", []) if r.status_code == 200 else []
+    except (requests.RequestException, ValueError):
+        return []
+    urls = []
+    for it in items:
+        link = it.get("link", "")
+        host = re.sub(r"^https?://", "", link).split("/")[0].lower()
+        if link and not any(d in host for d in DIRECTORY_HOSTS):
+            root = "https://" + host
+            if root not in urls:
+                urls.append(root)
+    return urls[:5]
+
+
+def find_website(number, name, postcode, town=None):
+    """Returns dict(url, match, title, description, phone, email) or None.
+
+    Guesses domains from the name first (free); if none is confirmed, falls
+    back to a Google search via Serper when SERPER_API_KEY is set.
+    """
     full, core = _words(name)
     core_phrase = " ".join(core)
     pc = (postcode or "").upper().replace(" ", "")
     probable = None
-    for domain in candidate_domains(name):
-        r = _fetch(f"https://{domain}") or _fetch(f"http://{domain}")
+    guesses = [f"https://{d}" for d in candidate_domains(name)]
+    searched = False
+    queue = list(guesses)
+    while queue or not searched:
+        if not queue:
+            searched = True
+            queue = [u for u in search_urls(name, town) if u not in guesses]
+            continue
+        url = queue.pop(0)
+        r = _fetch(url) or (_fetch(url.replace("https://", "http://")) if url in guesses else None)
         if r is None:
             continue
         html = r.text[:600000]

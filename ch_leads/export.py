@@ -7,11 +7,11 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from db import ROOT, connect
-from industries import INDUSTRIES, MIN_INCORPORATION_YEAR, fit_text
+from industries import INDUSTRIES, MIN_INCORPORATION_YEAR, MIN_TURNOVER, fit_text, icp_reject
 
 CH_URL = "https://find-and-update.company-information.service.gov.uk/company/{}"
 COLUMNS = [
-    ("Company name", 34), ("Company number", 12), ("Companies House link", 22), ("Directors", 9),
+    ("Company name", 34), ("Company number", 12), ("Companies House link", 22), ("Directors", 9), ("Turnover (£)", 13), ("Turnover basis", 26), ("Employees", 10),
     ("Director names", 32), ("Owners (PSC)", 28), ("Website", 30), ("Website match", 11), ("Phone", 16), ("Email", 28),
     ("Registered address", 40), ("Incorporated", 12), ("Accounts type", 18), ("SIC codes", 40),
     ("Overview", 60), ("Why it's a fit", 70), ("Verified contactable", 12), ("Flags", 24),
@@ -22,13 +22,16 @@ HEADER_FILL = PatternFill("solid", fgColor="1F3A5F")
 QUERY = """
 SELECT c.*, o.n_directors, o.names, p.status AS ch_status, p.undeliverable, p.in_dispute,
        p.insolvency, p.accounts_overdue, p.confstmt_overdue, p.owner_type, p.owners,
-       w.url, w.match, w.title, w.description, w.phone, w.email
+       w.url, w.match, w.title, w.description, w.phone, w.email,
+       f.est_turnover, f.basis, f.made_up, f.employees
 FROM companies c JOIN officers o ON o.number = c.number
+JOIN financials f ON f.number = c.number
 LEFT JOIN profiles p ON p.number = c.number
 LEFT JOIN websites w ON w.number = c.number
 WHERE o.n_directors IN (1, 2) AND ('|' || c.industries || '|') LIKE ?
   AND CAST(substr(c.incorporated, 7, 4) AS INTEGER) >= {year}
-""".format(year=MIN_INCORPORATION_YEAR)
+  AND f.est_turnover >= {turnover}
+""".format(year=MIN_INCORPORATION_YEAR, turnover=MIN_TURNOVER)
 BATCH_FILTER = """ AND w.number IS NOT NULL
   AND (c.number NOT IN (SELECT number FROM batched) OR c.number IN (SELECT number FROM batched WHERE batch = ?))"""
 
@@ -88,6 +91,8 @@ def build(path=None, batch=None):
             ok, flags = verify(r)
             if ok == "No":
                 continue
+            if icp_reject(ind, r["name"], (r["sic"] or "").split(" | "), bool(r["url"])):
+                continue
             rows.append(r)
         if batch:
             con.executemany("INSERT OR IGNORE INTO batched VALUES (?,?)", [(r["number"], batch) for r in rows])
@@ -106,7 +111,8 @@ def build(path=None, batch=None):
                 ok, flags = verify(r)
                 ws.append([
                     r["name"], r["number"], _link(ws, CH_URL.format(r["number"]), "View on Companies House"),
-                    r["n_directors"], r["names"], r["owners"] or "", _link(ws, r["url"], r["url"]) if r["url"] else "",
+                    r["n_directors"], round(r["est_turnover"] or 0, -3), r["basis"] + _year(r["made_up"]),
+                    int(r["employees"]) if r["employees"] is not None else "", r["names"], r["owners"] or "", _link(ws, r["url"], r["url"]) if r["url"] else "",
                     r["match"] if r["url"] else "", r["phone"] or "", r["email"] or "", r["address"],
                     r["incorporated"], (r["account_category"] or "").title(), r["sic"], overview(r),
                     fit_text(ind, r["n_directors"]), ok, flags,
@@ -125,11 +131,15 @@ def build(path=None, batch=None):
         summary.append(row)
     summary.append([])
     summary.append([f"Generated {datetime.datetime.now():%Y-%m-%d %H:%M} from Companies House data. "
-                    f"Leads are companies incorporated {MIN_INCORPORATION_YEAR} or later. They exclude dormant companies and any with insolvency history or an "
+                    f"Leads are companies incorporated {MIN_INCORPORATION_YEAR} or later with filed or estimated turnover of £{MIN_TURNOVER:,}+ (estimates use industry ratios from companies that file turnover). They exclude dormant companies and any with insolvency history or an "
                     "undeliverable / disputed registered office, and subsidiaries owned by another company (not owner-led). 'Probable' websites match the "
                     "company name but the company number wasn't found on the site."])
     wb.save(path)
     return path, summary_rows
+
+
+def _year(made_up):
+    return f" (accounts to {made_up[4:6]}/{made_up[:4]})" if made_up else ""
 
 
 def _hdr(ws, text):

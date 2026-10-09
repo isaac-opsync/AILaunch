@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS websites (
     number TEXT PRIMARY KEY, url TEXT, match TEXT, title TEXT, description TEXT,
     phone TEXT, email TEXT, checked_at TEXT
 );
+CREATE TABLE IF NOT EXISTS financials (
+    number TEXT PRIMARY KEY, made_up TEXT, turnover REAL, employees REAL, trade_debtors REAL,
+    debtors REAL, current_assets REAL, net_assets REAL, est_turnover REAL, basis TEXT
+);
+CREATE TABLE IF NOT EXISTS ingested (name TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS batched (number TEXT PRIMARY KEY, batch INTEGER);
 CREATE INDEX IF NOT EXISTS idx_officers_n ON officers(n_directors);
 """

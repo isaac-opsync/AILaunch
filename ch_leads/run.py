@@ -2,6 +2,7 @@
 
 Stages (each resumable, all state in data/leads.db):
   python3 run.py bulk        # download + load Companies House bulk data
+  python3 run.py accounts    # pull filed accounts (12 months bulk iXBRL), estimate turnover
   python3 run.py officers    # director counts + profile checks via API (needs CH_API_KEY)
   python3 run.py websites    # find + verify websites for 1-2 director companies
   python3 run.py export      # write output/bill_pay_leads_<date>.xlsx (all leads so far)
@@ -20,28 +21,24 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import accounts
 import bulk
 import ch_api
 import export
 import websites
 from db import connect
-from industries import INDUSTRIES, MIN_INCORPORATION_YEAR
-
-# Owner-managed SMEs first: small/abridged/total-exemption filers, then larger
-# filers, then micro-entities; group and subsidiary filers last.
-ACCOUNT_RANK = """CASE account_category
-  WHEN 'SMALL' THEN 0 WHEN 'TOTAL EXEMPTION FULL' THEN 0 WHEN 'UNAUDITED ABRIDGED' THEN 0
-  WHEN 'AUDITED ABRIDGED' THEN 0 WHEN 'TOTAL EXEMPTION SMALL' THEN 0
-  WHEN 'FULL' THEN 1 WHEN 'MEDIUM' THEN 1 WHEN 'MICRO ENTITY' THEN 2 ELSE 3 END"""
+from industries import INDUSTRIES, MIN_INCORPORATION_YEAR, MIN_TURNOVER
 
 
 def pending_queues(con, industries, limit):
     qs = {}
     for ind in industries:
-        sql = (f"SELECT number FROM companies WHERE ('|'||industries||'|') LIKE ? "
+        sql = (f"SELECT number FROM companies JOIN financials f USING(number) "
+               f"WHERE ('|'||industries||'|') LIKE ? AND f.est_turnover >= {MIN_TURNOVER} "
                f"AND number NOT IN (SELECT number FROM officers) "
                f"AND CAST(substr(incorporated,7,4) AS INTEGER) >= {MIN_INCORPORATION_YEAR} "
-               f"ORDER BY {ACCOUNT_RANK}, CAST(substr(incorporated,7,4) AS INTEGER) >= 2023, random()")
+               # SME band (£500k-£20m) first, in random order so every era/size mixes in.
+               f"ORDER BY f.est_turnover > 20000000, random()")
         if limit:
             sql += f" LIMIT {int(limit)}"
         qs[ind] = [r[0] for r in con.execute(sql, (f"%|{ind}|%",))]
@@ -66,6 +63,37 @@ def round_robin(qs):
                 yield n
         if not progressed:
             return
+
+
+def run_accounts():
+    con = connect()
+    wanted = {r[0] for r in con.execute(
+        "SELECT number FROM companies WHERE CAST(substr(incorporated,7,4) AS INTEGER) >= ?",
+        (MIN_INCORPORATION_YEAR,))}
+    for name in accounts.archives():
+        t = time.time()
+        n = accounts.ingest(name, wanted, con)
+        total = con.execute("SELECT count(*) FROM financials").fetchone()[0]
+        print(f"accounts: {name}: {n} filings stored ({time.time() - t:.0f}s), "
+              f"{total} companies with accounts", flush=True)
+
+
+def run_estimate():
+    con = connect()
+    ratios = accounts.calibrate(con, INDUSTRIES)
+    fallback = ratios["*"][0]
+    for ind, (r, n) in ratios.items():
+        print(f"calibration {ind}: {n} filers, " + ", ".join(f"{k} x{v:,.1f}" for k, v in r.items()))
+    rows = con.execute("SELECT f.*, c.industries FROM financials f JOIN companies c USING(number)").fetchall()
+    out = []
+    for f in rows:
+        ind = f["industries"].split("|")[0]
+        est, basis = accounts.estimate(f, ratios.get(ind, ({}, 0))[0], fallback)
+        out.append((est, basis, f["number"]))
+    con.executemany("UPDATE financials SET est_turnover=?, basis=? WHERE number=?", out)
+    con.commit()
+    hits = sum(1 for e, _, _ in out if e and e >= MIN_TURNOVER)
+    print(f"estimate: {len(out)} companies, {hits} at £{MIN_TURNOVER:,}+")
 
 
 def run_officers(industries, limit):
@@ -120,9 +148,9 @@ def run_websites(follow, workers=24):
     lock = threading.Lock()
 
     def one(row):
-        n, name, pc = row
+        n, name, pc, town = row
         try:
-            res = websites.find_website(n, name, pc)
+            res = websites.find_website(n, name, pc, town)
         except Exception:
             res = None
         res = res or {}
@@ -137,8 +165,10 @@ def run_websites(follow, workers=24):
     with ThreadPoolExecutor(workers) as pool:
         while True:
             rows = con.execute(
-                "SELECT c.number, c.name, c.postcode FROM companies c JOIN officers o USING(number) "
+                "SELECT c.number, c.name, c.postcode, c.town FROM companies c JOIN officers o USING(number) "
+                "JOIN financials f USING(number) "
                 "WHERE o.n_directors IN (1,2) AND c.number NOT IN (SELECT number FROM websites) "
+                f"AND f.est_turnover >= {MIN_TURNOVER} "
                 f"AND CAST(substr(c.incorporated,7,4) AS INTEGER) >= {MIN_INCORPORATION_YEAR} "
                 "ORDER BY o.n_directors LIMIT 500").fetchall()
             if not rows:
@@ -191,7 +221,7 @@ def run_restore():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=["bulk", "officers", "websites", "export", "batch", "restore"])
+    ap.add_argument("stage", choices=["bulk", "accounts", "estimate", "officers", "websites", "export", "batch", "restore"])
     ap.add_argument("--industries", help="comma-separated tab names (default: all)")
     ap.add_argument("--limit", type=int, help="max companies per industry this run")
     ap.add_argument("--follow", action="store_true", help="websites: keep polling for new leads")
@@ -199,6 +229,11 @@ def main():
     inds = [i.strip() for i in a.industries.split(",")] if a.industries else list(INDUSTRIES)
     if a.stage == "bulk":
         print("loaded", bulk.load(bulk.download()), "candidate companies")
+    elif a.stage == "accounts":
+        run_accounts()
+        run_estimate()
+    elif a.stage == "estimate":
+        run_estimate()
     elif a.stage == "officers":
         run_officers(inds, a.limit)
     elif a.stage == "websites":
