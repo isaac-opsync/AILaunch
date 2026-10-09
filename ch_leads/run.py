@@ -22,12 +22,12 @@ import websites
 from db import connect
 from industries import INDUSTRIES
 
-# Prefer companies filing fuller accounts (bigger turnover) and with a trading history.
+# Owner-managed SMEs first: small/abridged/total-exemption filers, then larger
+# filers, then micro-entities; group and subsidiary filers last.
 ACCOUNT_RANK = """CASE account_category
-  WHEN 'FULL' THEN 0 WHEN 'MEDIUM' THEN 0 WHEN 'GROUP' THEN 0 WHEN 'SMALL' THEN 1
-  WHEN 'TOTAL EXEMPTION FULL' THEN 2 WHEN 'AUDIT EXEMPTION SUBSIDIARY' THEN 3
-  WHEN 'UNAUDITED ABRIDGED' THEN 3 WHEN 'TOTAL EXEMPTION SMALL' THEN 3
-  WHEN 'MICRO ENTITY' THEN 4 ELSE 5 END"""
+  WHEN 'SMALL' THEN 0 WHEN 'TOTAL EXEMPTION FULL' THEN 0 WHEN 'UNAUDITED ABRIDGED' THEN 0
+  WHEN 'AUDITED ABRIDGED' THEN 0 WHEN 'TOTAL EXEMPTION SMALL' THEN 0
+  WHEN 'FULL' THEN 1 WHEN 'MEDIUM' THEN 1 WHEN 'MICRO ENTITY' THEN 2 ELSE 3 END"""
 
 
 def pending_queues(con, industries, limit):
@@ -79,14 +79,16 @@ def run_officers(industries, limit):
             if n is None:
                 return
             nd, names, status = ch_api.fetch_officers(client, n)
-            prof = ch_api.fetch_profile(client, n) if nd in (1, 2) else None
+            prof = None
+            if nd in (1, 2):
+                prof = ch_api.fetch_profile(client, n) + ch_api.fetch_owners(client, n)
             with lock:
                 if nd is not None:
                     wcon.execute("INSERT OR REPLACE INTO officers VALUES (?,?,?,?,?)",
                                  (n, nd, names, status, ch_api.now()))
                 if prof:
-                    wcon.execute("INSERT OR REPLACE INTO profiles VALUES (?,?,?,?,?,?,?,?)",
-                                 (n, *prof, ch_api.now()))
+                    wcon.execute("INSERT OR REPLACE INTO profiles VALUES (?,?,?,?,?,?,?,?,?,?)",
+                                 (n, *prof[:6], ch_api.now(), *prof[6:]))
                 wcon.commit()
                 stats["done"] += 1
                 stats["fit"] += nd in (1, 2)

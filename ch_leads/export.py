@@ -12,7 +12,7 @@ from industries import INDUSTRIES, fit_text
 CH_URL = "https://find-and-update.company-information.service.gov.uk/company/{}"
 COLUMNS = [
     ("Company name", 34), ("Company number", 12), ("Companies House link", 22), ("Directors", 9),
-    ("Director names", 32), ("Website", 30), ("Website match", 11), ("Phone", 16), ("Email", 28),
+    ("Director names", 32), ("Owners (PSC)", 28), ("Website", 30), ("Website match", 11), ("Phone", 16), ("Email", 28),
     ("Registered address", 40), ("Incorporated", 12), ("Accounts type", 18), ("SIC codes", 40),
     ("Overview", 60), ("Why it's a fit", 70), ("Verified contactable", 12), ("Flags", 24),
 ]
@@ -21,7 +21,7 @@ HEADER_FILL = PatternFill("solid", fgColor="1F3A5F")
 
 QUERY = """
 SELECT c.*, o.n_directors, o.names, p.status AS ch_status, p.undeliverable, p.in_dispute,
-       p.insolvency, p.accounts_overdue, p.confstmt_overdue,
+       p.insolvency, p.accounts_overdue, p.confstmt_overdue, p.owner_type, p.owners,
        w.url, w.match, w.title, w.description, w.phone, w.email
 FROM companies c JOIN officers o ON o.number = c.number
 LEFT JOIN profiles p ON p.number = c.number
@@ -54,6 +54,8 @@ def verify(r):
         flags.append("registered office in dispute")
     if r["insolvency"]:
         flags.append("insolvency history")
+    if r["owner_type"] == "corporate":
+        flags.append(f"subsidiary of {r['owners']}")
     hard = bool(flags)
     if r["accounts_overdue"]:
         flags.append("accounts overdue")
@@ -94,7 +96,7 @@ def build(path=None):
                 ok, flags = verify(r)
                 ws.append([
                     r["name"], r["number"], _link(ws, CH_URL.format(r["number"]), "View on Companies House"),
-                    r["n_directors"], r["names"], _link(ws, r["url"], r["url"]) if r["url"] else "",
+                    r["n_directors"], r["names"], r["owners"] or "", _link(ws, r["url"], r["url"]) if r["url"] else "",
                     r["match"] if r["url"] else "", r["phone"] or "", r["email"] or "", r["address"],
                     r["incorporated"], (r["account_category"] or "").title(), r["sic"], overview(r),
                     fit_text(ind, r["n_directors"]), ok, flags,
@@ -113,7 +115,7 @@ def build(path=None):
     summary.append([])
     summary.append([f"Generated {datetime.datetime.now():%Y-%m-%d %H:%M} from Companies House data. "
                     "Leads exclude dormant companies and any with insolvency history or an "
-                    "undeliverable / disputed registered office. 'Probable' websites match the "
+                    "undeliverable / disputed registered office, and subsidiaries owned by another company (not owner-led). 'Probable' websites match the "
                     "company name but the company number wasn't found on the site."])
     wb.save(path)
     return path, summary_rows

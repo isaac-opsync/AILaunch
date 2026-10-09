@@ -1,5 +1,6 @@
 """Rate-limited Companies House API client: officers + company profile."""
 import datetime
+import re
 import threading
 import time
 
@@ -62,6 +63,7 @@ def fetch_officers(client, number):
 
 
 def _tidy(name):
+    name = re.sub(r"^(Mr|Mrs|Ms|Miss|Dr)\.?\s+", "", name.strip(), flags=re.I)
     # Companies House gives "SURNAME, Forename Middle"; show "Forename Middle Surname".
     if "," in name:
         last, first = name.split(",", 1)
@@ -82,3 +84,22 @@ def fetch_profile(client, number):
         int(bool((d.get("accounts") or {}).get("overdue"))),
         int(bool((d.get("confirmation_statement") or {}).get("overdue"))),
     )
+
+
+def fetch_owners(client, number):
+    """Persons with significant control. Returns (owner_type, owner names).
+
+    owner_type: 'individual' (owner-managed), 'corporate' (subsidiary of another
+    company, so not owner-led), or 'unknown'.
+    """
+    r = client.get(f"/company/{number}/persons-with-significant-control")
+    if r is None or r.status_code != 200:
+        return "unknown", ""
+    items = [i for i in r.json().get("items", []) if not i.get("ceased_on")]
+    people = [_tidy(i.get("name", "")) for i in items if i.get("kind", "").startswith("individual")]
+    corporate = [i for i in items if i.get("kind", "").startswith(("corporate", "legal-person"))]
+    if people:
+        return "individual", "; ".join(people)
+    if corporate:
+        return "corporate", "; ".join(i.get("name", "") for i in corporate)
+    return "unknown", ""
