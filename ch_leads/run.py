@@ -4,11 +4,16 @@ Stages (each resumable, all state in data/leads.db):
   python3 run.py bulk        # download + load Companies House bulk data
   python3 run.py officers    # director counts + profile checks via API (needs CH_API_KEY)
   python3 run.py websites    # find + verify websites for 1-2 director companies
-  python3 run.py export      # write output/bill_pay_leads_<date>.xlsx
+  python3 run.py export      # write output/bill_pay_leads_<date>.xlsx (all leads so far)
+  python3 run.py batch       # new leads since last batch -> batches/batch_NNN_<date>.xlsx,
+                             # plus a resume snapshot in batches/state.sql.gz
+  python3 run.py restore     # fresh machine: run `bulk` first, then this to resume
 
 CH_API_KEY may hold several comma-separated keys to multiply throughput.
 """
 import argparse
+import datetime
+import gzip
 import os
 import queue
 import threading
@@ -145,9 +150,46 @@ def run_websites(follow, workers=24):
             print(f"websites: {total} checked, {found} found", flush=True)
 
 
+BATCH_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "batches")
+STATE = os.path.join(BATCH_DIR, "state.sql.gz")
+STATE_TABLES = ("officers", "profiles", "websites", "batched")
+
+
+def run_batch():
+    os.makedirs(BATCH_DIR, exist_ok=True)
+    con = connect()
+    n = (con.execute("SELECT max(batch) FROM batched").fetchone()[0] or 0) + 1
+    path = os.path.join(BATCH_DIR, f"batch_{n:03d}_{datetime.date.today():%Y-%m-%d}.xlsx")
+    path, rows = export.build(path, batch=n)
+    new = con.execute("SELECT count(*) FROM batched WHERE batch=?", (n,)).fetchone()[0]
+    if not new:
+        os.remove(path)
+        print("no new leads since last batch")
+        return
+    for r in rows:
+        print(r)
+    with gzip.open(STATE, "wt") as f:
+        for t in STATE_TABLES:
+            cols = [r[1] for r in con.execute(f"PRAGMA table_info({t})")]
+            for row in con.execute(f"SELECT * FROM {t}"):
+                vals = ",".join("NULL" if v is None else str(v) if isinstance(v, int)
+                                else "'" + str(v).replace("'", "''") + "'" for v in row)
+                f.write(f"INSERT INTO {t} ({','.join(cols)}) VALUES ({vals});\n")
+    print(f"batch {n}: {new} new leads -> {path}")
+
+
+def run_restore():
+    con = connect()
+    with gzip.open(STATE, "rt") as f:
+        for line in f:
+            con.execute(line.replace("INSERT INTO", "INSERT OR REPLACE INTO", 1))
+    con.commit()
+    print("restored", {t: con.execute(f"SELECT count(*) FROM {t}").fetchone()[0] for t in STATE_TABLES})
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("stage", choices=["bulk", "officers", "websites", "export"])
+    ap.add_argument("stage", choices=["bulk", "officers", "websites", "export", "batch", "restore"])
     ap.add_argument("--industries", help="comma-separated tab names (default: all)")
     ap.add_argument("--limit", type=int, help="max companies per industry this run")
     ap.add_argument("--follow", action="store_true", help="websites: keep polling for new leads")
@@ -159,6 +201,10 @@ def main():
         run_officers(inds, a.limit)
     elif a.stage == "websites":
         run_websites(a.follow)
+    elif a.stage == "batch":
+        run_batch()
+    elif a.stage == "restore":
+        run_restore()
     else:
         path, rows = export.build()
         for r in rows:

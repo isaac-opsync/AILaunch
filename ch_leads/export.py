@@ -28,6 +28,8 @@ LEFT JOIN profiles p ON p.number = c.number
 LEFT JOIN websites w ON w.number = c.number
 WHERE o.n_directors IN (1, 2) AND ('|' || c.industries || '|') LIKE ?
 """
+BATCH_FILTER = """ AND w.number IS NOT NULL
+  AND (c.number NOT IN (SELECT number FROM batched) OR c.number IN (SELECT number FROM batched WHERE batch = ?))"""
 
 
 def overview(r):
@@ -64,7 +66,8 @@ def verify(r):
     return ("No" if hard else "Yes"), "; ".join(flags)
 
 
-def build(path=None):
+def build(path=None, batch=None):
+    """Full workbook, or with batch=N only leads assigned to batch N (new ones first)."""
     con = connect()
     path = path or os.path.join(ROOT, "output", f"bill_pay_leads_{datetime.date.today():%Y-%m-%d}.xlsx")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -77,11 +80,15 @@ def build(path=None):
         checked = con.execute("SELECT count(*) FROM companies c JOIN officers o USING(number) "
                               "WHERE ('|'||c.industries||'|') LIKE ?", (f"%|{ind}|%",)).fetchone()[0]
         rows = []
-        for r in con.execute(QUERY, (f"%|{ind}|%",)):
+        q, args = (QUERY + BATCH_FILTER, (f"%|{ind}|%", batch)) if batch else (QUERY, (f"%|{ind}|%",))
+        for r in con.execute(q, args):
             ok, flags = verify(r)
             if ok == "No":
                 continue
             rows.append(r)
+        if batch:
+            con.executemany("INSERT OR IGNORE INTO batched VALUES (?,?)", [(r["number"], batch) for r in rows])
+            con.commit()
         rows.sort(key=lambda r: (r["n_directors"], 0 if r["match"] == "Confirmed" else 1 if r["url"] else 2,
                                  r["name"]))
         for part in range(0, max(len(rows), 1), MAX_ROWS):
@@ -107,8 +114,9 @@ def build(path=None):
     summary.column_dimensions["A"].width = 26
     for col in "BCDEFG":
         summary.column_dimensions[col].width = 18
+    lead_hdr = f"Leads in batch {batch}" if batch else "Leads (1-2 directors)"
     summary.append([_hdr(summary, h) for h in ("Industry", "Active candidates (SIC match)",
-                    "Director count checked", "Leads (1-2 directors)", "1 director", "2 directors",
+                    "Director count checked (all batches)", lead_hdr, "1 director", "2 directors",
                     "Website found")])
     for row in summary_rows:
         summary.append(row)

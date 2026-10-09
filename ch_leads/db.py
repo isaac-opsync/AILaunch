@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS websites (
     number TEXT PRIMARY KEY, url TEXT, match TEXT, title TEXT, description TEXT,
     phone TEXT, email TEXT, checked_at TEXT
 );
+CREATE TABLE IF NOT EXISTS batched (number TEXT PRIMARY KEY, batch INTEGER);
 CREATE INDEX IF NOT EXISTS idx_officers_n ON officers(n_directors);
 """
 
