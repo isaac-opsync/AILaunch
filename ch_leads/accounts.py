@@ -7,6 +7,7 @@ calibrated on companies in the same industry that do file turnover.
 import os
 import re
 import statistics
+import time
 import zipfile
 
 import requests
@@ -85,18 +86,36 @@ def archives(months=12):
     return monthly + daily
 
 
+def _download(url, path, attempts=8):
+    """Download with resume: large archives sometimes drop mid-transfer."""
+    part = path + ".part"
+    for attempt in range(attempts):
+        have = os.path.getsize(part) if os.path.exists(part) else 0
+        headers = {"Range": f"bytes={have}-"} if have else {}
+        try:
+            with requests.get(url, stream=True, timeout=600, headers=headers) as r:
+                if r.status_code == 416:
+                    break  # already complete
+                r.raise_for_status()
+                mode = "ab" if have and r.status_code == 206 else "wb"
+                with open(part, mode) as f:
+                    for chunk in r.iter_content(4 << 20):
+                        f.write(chunk)
+            break
+        except requests.RequestException:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(5 * (attempt + 1))
+    os.rename(part, path)
+
+
 def ingest(name, wanted, con):
     """Download one archive, store financials for wanted company numbers, delete it."""
     done = con.execute("SELECT 1 FROM ingested WHERE name=?", (name,)).fetchone()
     if done:
         return 0
     path = os.path.join(DATA_DIR, name)
-    with requests.get(BASE + name, stream=True, timeout=600) as r:
-        r.raise_for_status()
-        with open(path + ".part", "wb") as f:
-            for chunk in r.iter_content(4 << 20):
-                f.write(chunk)
-    os.rename(path + ".part", path)
+    _download(BASE + name, path)
     n = 0
     try:
         with zipfile.ZipFile(path) as z:
