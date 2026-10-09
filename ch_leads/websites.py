@@ -168,6 +168,11 @@ def find_website(number, name, postcode, town=None):
         rec = dict(url=r.url.rstrip("/"), title=title, description=desc, phone=phone, email=email)
         if confirmed:
             return dict(rec, match="Confirmed")
-        if probable is None and name_hit:
+        # Name alone can match a different business (e.g. a brand); also need
+        # the registered name with Ltd/Limited, or the registered town/postcode area.
+        reg_name = re.sub(r"[^A-Z0-9 ]", " ", " ".join(full).upper())
+        local = (town and town.upper() in upper) or (pc and pc[:-3] and re.search(
+            r"\b" + re.escape(pc[:-3]) + r"\s?\d[A-Z]{2}\b", upper))
+        if probable is None and name_hit and (reg_name in re.sub(r"[^A-Z0-9 ]", " ", upper) or local):
             probable = dict(rec, match="Probable")
     return probable
