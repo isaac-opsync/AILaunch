@@ -25,7 +25,7 @@ import ch_api
 import export
 import websites
 from db import connect
-from industries import INDUSTRIES
+from industries import INDUSTRIES, MIN_INCORPORATION_YEAR
 
 # Owner-managed SMEs first: small/abridged/total-exemption filers, then larger
 # filers, then micro-entities; group and subsidiary filers last.
@@ -40,7 +40,8 @@ def pending_queues(con, industries, limit):
     for ind in industries:
         sql = (f"SELECT number FROM companies WHERE ('|'||industries||'|') LIKE ? "
                f"AND number NOT IN (SELECT number FROM officers) "
-               f"ORDER BY {ACCOUNT_RANK}, substr(incorporated,7,4)||substr(incorporated,4,2)")
+               f"AND CAST(substr(incorporated,7,4) AS INTEGER) >= {MIN_INCORPORATION_YEAR} "
+               f"ORDER BY {ACCOUNT_RANK}, CAST(substr(incorporated,7,4) AS INTEGER) >= 2023, random()")
         if limit:
             sql += f" LIMIT {int(limit)}"
         qs[ind] = [r[0] for r in con.execute(sql, (f"%|{ind}|%",))]
@@ -138,6 +139,7 @@ def run_websites(follow, workers=24):
             rows = con.execute(
                 "SELECT c.number, c.name, c.postcode FROM companies c JOIN officers o USING(number) "
                 "WHERE o.n_directors IN (1,2) AND c.number NOT IN (SELECT number FROM websites) "
+                f"AND CAST(substr(c.incorporated,7,4) AS INTEGER) >= {MIN_INCORPORATION_YEAR} "
                 "ORDER BY o.n_directors LIMIT 500").fetchall()
             if not rows:
                 if not follow:

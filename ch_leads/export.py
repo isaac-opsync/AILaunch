@@ -7,7 +7,7 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from db import ROOT, connect
-from industries import INDUSTRIES, fit_text
+from industries import INDUSTRIES, MIN_INCORPORATION_YEAR, fit_text
 
 CH_URL = "https://find-and-update.company-information.service.gov.uk/company/{}"
 COLUMNS = [
@@ -27,7 +27,8 @@ FROM companies c JOIN officers o ON o.number = c.number
 LEFT JOIN profiles p ON p.number = c.number
 LEFT JOIN websites w ON w.number = c.number
 WHERE o.n_directors IN (1, 2) AND ('|' || c.industries || '|') LIKE ?
-"""
+  AND CAST(substr(c.incorporated, 7, 4) AS INTEGER) >= {year}
+""".format(year=MIN_INCORPORATION_YEAR)
 BATCH_FILTER = """ AND w.number IS NOT NULL
   AND (c.number NOT IN (SELECT number FROM batched) OR c.number IN (SELECT number FROM batched WHERE batch = ?))"""
 
@@ -75,10 +76,12 @@ def build(path=None, batch=None):
     summary = wb.create_sheet("Summary")
     summary_rows = []
     for ind in INDUSTRIES:
-        total = con.execute("SELECT count(*) FROM companies WHERE ('|'||industries||'|') LIKE ?",
-                            (f"%|{ind}|%",)).fetchone()[0]
+        total = con.execute("SELECT count(*) FROM companies WHERE ('|'||industries||'|') LIKE ? "
+                            "AND CAST(substr(incorporated,7,4) AS INTEGER) >= ?",
+                            (f"%|{ind}|%", MIN_INCORPORATION_YEAR)).fetchone()[0]
         checked = con.execute("SELECT count(*) FROM companies c JOIN officers o USING(number) "
-                              "WHERE ('|'||c.industries||'|') LIKE ?", (f"%|{ind}|%",)).fetchone()[0]
+                              "WHERE ('|'||c.industries||'|') LIKE ? AND CAST(substr(c.incorporated,7,4) AS INTEGER) >= ?",
+                              (f"%|{ind}|%", MIN_INCORPORATION_YEAR)).fetchone()[0]
         rows = []
         q, args = (QUERY + BATCH_FILTER, (f"%|{ind}|%", batch)) if batch else (QUERY, (f"%|{ind}|%",))
         for r in con.execute(q, args):
@@ -122,7 +125,7 @@ def build(path=None, batch=None):
         summary.append(row)
     summary.append([])
     summary.append([f"Generated {datetime.datetime.now():%Y-%m-%d %H:%M} from Companies House data. "
-                    "Leads exclude dormant companies and any with insolvency history or an "
+                    f"Leads are companies incorporated {MIN_INCORPORATION_YEAR} or later. They exclude dormant companies and any with insolvency history or an "
                     "undeliverable / disputed registered office, and subsidiaries owned by another company (not owner-led). 'Probable' websites match the "
                     "company name but the company number wasn't found on the site."])
     wb.save(path)

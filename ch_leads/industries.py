@@ -68,6 +68,9 @@ for _name, _v in INDUSTRIES.items():
     for _c in _v["sic"]:
         SIC_TO_INDUSTRIES.setdefault(_c, []).append(_name)
 
+# Only companies incorporated in or after this year (older ones skew old-school).
+MIN_INCORPORATION_YEAR = 1990
+
 BILL_PAY_LINE = (
     "Bill Pay lets them pay these non-card suppliers from Capital on Tap: the 1.5% fee is a "
     "deductible business cost while they earn 1% (credit) / 1.25% (preload) cashback."
