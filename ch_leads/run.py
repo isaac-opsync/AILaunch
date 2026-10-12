@@ -38,7 +38,8 @@ def pending_queues(con, industries, limit):
                f"AND number NOT IN (SELECT number FROM officers) "
                f"AND CAST(substr(incorporated,7,4) AS INTEGER) >= {MIN_INCORPORATION_YEAR} "
                # SME band (£500k-£20m) first, in random order so every era/size mixes in.
-               f"ORDER BY f.est_turnover > 20000000, random()")
+               # Pharmacies (primary SIC 47730) lead the Pharmaceuticals queue.
+               f"ORDER BY substr(sic,1,5) != '47730', f.est_turnover > 20000000, random()")
         if limit:
             sql += f" LIMIT {int(limit)}"
         qs[ind] = [r[0] for r in con.execute(sql, (f"%|{ind}|%",))]
@@ -187,12 +188,13 @@ STATE = os.path.join(BATCH_DIR, "state.sql.gz")
 STATE_TABLES = ("officers", "profiles", "websites", "batched")
 
 
-def run_batch():
+def run_batch(industries=None):
     os.makedirs(BATCH_DIR, exist_ok=True)
     con = connect()
     n = (con.execute("SELECT max(batch) FROM batched").fetchone()[0] or 0) + 1
-    path = os.path.join(BATCH_DIR, f"batch_{n:03d}_{datetime.date.today():%Y-%m-%d}.xlsx")
-    path, rows = export.build(path, batch=n)
+    tag = "_" + "_".join(i.split()[0].lower() for i in industries) if industries else ""
+    path = os.path.join(BATCH_DIR, f"batch_{n:03d}_{datetime.date.today():%Y-%m-%d}{tag}.xlsx")
+    path, rows = export.build(path, batch=n, industries=industries)
     new = con.execute("SELECT count(*) FROM batched WHERE batch=?", (n,)).fetchone()[0]
     if not new:
         os.remove(path)
@@ -239,7 +241,7 @@ def main():
     elif a.stage == "websites":
         run_websites(a.follow)
     elif a.stage == "batch":
-        run_batch()
+        run_batch(inds if a.industries else None)
     elif a.stage == "restore":
         run_restore()
     else:

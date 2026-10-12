@@ -70,7 +70,7 @@ def verify(r):
     return ("No" if hard else "Yes"), "; ".join(flags)
 
 
-def build(path=None, batch=None):
+def build(path=None, batch=None, industries=None):
     """Full workbook, or with batch=N only leads assigned to batch N (new ones first)."""
     con = connect()
     path = path or os.path.join(ROOT, "output", f"bill_pay_leads_{datetime.date.today():%Y-%m-%d}.xlsx")
@@ -78,7 +78,7 @@ def build(path=None, batch=None):
     wb = Workbook(write_only=True)
     summary = wb.create_sheet("Summary")
     summary_rows = []
-    for ind in INDUSTRIES:
+    for ind in industries or INDUSTRIES:
         total = con.execute("SELECT count(*) FROM companies WHERE ('|'||industries||'|') LIKE ? "
                             "AND CAST(substr(incorporated,7,4) AS INTEGER) >= ?",
                             (f"%|{ind}|%", MIN_INCORPORATION_YEAR)).fetchone()[0]
