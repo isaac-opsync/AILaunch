@@ -149,9 +149,11 @@ def run_websites(follow, workers=24):
     lock = threading.Lock()
 
     def one(row):
-        n, name, pc, town = row
+        n, name, pc, town, sic = row
+        # Pharmacies usually trade under a different name; tell Google what they are.
+        hint = "pharmacy" if (sic or "").startswith("47730") else ""
         try:
-            res = websites.find_website(n, name, pc, town)
+            res = websites.find_website(n, name, pc, town, hint)
         except Exception:
             res = None
         res = res or {}
@@ -166,7 +168,7 @@ def run_websites(follow, workers=24):
     with ThreadPoolExecutor(workers) as pool:
         while True:
             rows = con.execute(
-                "SELECT c.number, c.name, c.postcode, c.town FROM companies c JOIN officers o USING(number) "
+                "SELECT c.number, c.name, c.postcode, c.town, c.sic FROM companies c JOIN officers o USING(number) "
                 "JOIN financials f USING(number) "
                 "WHERE o.n_directors IN (1,2) AND c.number NOT IN (SELECT number FROM websites) "
                 f"AND f.est_turnover >= {MIN_TURNOVER} "

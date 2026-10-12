@@ -85,6 +85,9 @@ def _contacts(html, text):
     return (phones[0].strip() if phones else ""), email
 
 
+GENERIC_WORDS = {"pharmacy", "pharmacies", "chemist", "chemists", "pharmaceutical", "pharmaceuticals",
+                 "healthcare", "health", "medical", "dispensing", "limited", "group"}
+
 DIRECTORY_HOSTS = (
     "companieshouse", "company-information.service.gov.uk", "endole", "opencorporates", "linkedin.",
     "facebook.", "instagram.", "twitter.", "x.com", "yell.com", "companycheck", "bizdb", "dnb.com",
@@ -92,10 +95,11 @@ DIRECTORY_HOSTS = (
     "trustpilot", "glassdoor", "indeed.", "cylex", "192.com", "scoot.co.uk", "thomsonlocal",
     "freeindex", "companydatashop", "suite.endole", "bloomberg", "crunchbase", "wikipedia",
     "youtube", "tiktok", "pinterest", "amazon.", "ebay.", "google.", "bing.", "apple.com",
+    "patientaccess", "findpharmacy", "pharmdata", "mapquest", "nhs.uk",
 )
 
 
-def search_urls(name, town):
+def search_urls(name, town, hint=""):
     """Top organic Google results via Serper.dev (needs SERPER_API_KEY)."""
     key = os.environ.get("SERPER_API_KEY")
     if not key:
@@ -104,7 +108,7 @@ def search_urls(name, town):
     try:
         r = requests.post("https://google.serper.dev/search", timeout=15,
                           headers={"X-API-KEY": key, "Content-Type": "application/json"},
-                          json={"q": f"{q} {town or ''}".strip(), "gl": "uk", "num": 10})
+                          json={"q": f"{q} {hint} {town or ''}".strip(), "gl": "uk", "num": 10})
         items = r.json().get("organic", []) if r.status_code == 200 else []
     except (requests.RequestException, ValueError):
         return []
@@ -112,6 +116,10 @@ def search_urls(name, town):
     for it in items:
         link = it.get("link", "")
         host = re.sub(r"^https?://", "", link).split("/")[0].lower()
+        if host.endswith("nhs.uk") and "/services/pharmacy/" in link:
+            if link not in urls:
+                urls.append(link)  # NHS pharmacy listing: trading name, phone, address
+            continue
         if link and not any(d in host for d in DIRECTORY_HOSTS):
             root = "https://" + host
             if root not in urls:
@@ -119,7 +127,7 @@ def search_urls(name, town):
     return urls[:5]
 
 
-def find_website(number, name, postcode, town=None):
+def find_website(number, name, postcode, town=None, hint=""):
     """Returns dict(url, match, title, description, phone, email) or None.
 
     Guesses domains from the name first (free); if none is confirmed, falls
@@ -128,14 +136,14 @@ def find_website(number, name, postcode, town=None):
     full, core = _words(name)
     core_phrase = " ".join(core)
     pc = (postcode or "").upper().replace(" ", "")
-    probable = None
+    probable = nhs = None
     guesses = [f"https://{d}" for d in candidate_domains(name)]
     searched = False
     queue = list(guesses)
     while queue or not searched:
         if not queue:
             searched = True
-            queue = [u for u in search_urls(name, town) if u not in guesses]
+            queue = [u for u in search_urls(name, town, hint) if u not in guesses]
             continue
         url = queue.pop(0)
         r = _fetch(url) or (_fetch(url.replace("https://", "http://")) if url in guesses else None)
@@ -145,6 +153,20 @@ def find_website(number, name, postcode, town=None):
         text = _text(html)
         title, desc = _meta(html)
         pages = [(html, text)]
+        if "nhs.uk/services/" in r.url:
+            # Pharmacies trade under their own name, so match the NHS listing on
+            # the distinctive part of the company name plus the local area.
+            up = text.upper().replace("'", "").replace("\u2019", "")
+            key = [w for w in core if len(w) >= 4 and w not in GENERIC_WORDS]
+            local = (town and town.upper() in up) or (pc and pc[:-3] and pc[:-3] in up.replace(" ", ""))
+            if nhs is None and key and key[0].upper() in up and local:
+                ld = lambda k: (re.search(r'"%s"\s*:\s*"([^"]*)"' % k, html) or [None, ""])[1].strip()
+                own = ld("url")
+                nhs = dict(url=own.rstrip("/") if own.startswith("http") else r.url.rstrip("/"),
+                           title=ld("name") or title, description=desc,
+                           phone=ld("telephone") or _contacts(html, text)[0], email=ld("email"),
+                           match="NHS listing")
+            continue
         confirmed = _number_on_page(number, text)
         if not confirmed:
             for p in EXTRA_PAGES:
@@ -157,7 +179,7 @@ def find_website(number, name, postcode, town=None):
                     confirmed = True
                     break
         alltext = " ".join(t for _, t in pages)
-        upper = alltext.upper()
+        upper = alltext.upper().replace("'", "").replace("\u2019", "")
         name_hit = len(core_phrase) >= 4 and core_phrase.upper() in re.sub(r"[^A-Z0-9 ]", " ", upper)
         if not confirmed and name_hit and pc and pc in upper.replace(" ", ""):
             confirmed = True
@@ -175,4 +197,4 @@ def find_website(number, name, postcode, town=None):
             r"\b" + re.escape(pc[:-3]) + r"\s?\d[A-Z]{2}\b", upper))
         if probable is None and name_hit and (reg_name in re.sub(r"[^A-Z0-9 ]", " ", upper) or local):
             probable = dict(rec, match="Probable")
-    return probable
+    return probable or nhs
